@@ -1,5 +1,13 @@
 //DATA MODELS
 
+export type VerificationDto = {
+  id: string;
+  userId?: string;
+  createdAt?: string; // en JSON normalmente viene como ISO string
+  url?: string | null;
+  title?: string | null;
+  analysis?: any; // o una forma más estricta si la conoces
+};
 export interface SourceAnalysis {
   type: string;
   bias: string;

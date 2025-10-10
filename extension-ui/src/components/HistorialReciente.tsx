@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import type { Verification } from '@prisma/client'; 
+import type { VerificationDto } from '../../../types'; 
 
 export function HistorialReciente() {
-  const [history, setHistory] = useState<Verification[] | null>(null);
+  const [history, setHistory] = useState<VerificationDto[] | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
