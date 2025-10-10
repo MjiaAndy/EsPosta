@@ -10,6 +10,9 @@
 !.yarn/releases
 !.yarn/versions
 
+# Build de la Extensión
+/extension-dist
+
 # testing
 /coverage
 
@@ -39,3 +42,5 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/lib/generated/prisma
