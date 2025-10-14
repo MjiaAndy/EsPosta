@@ -10,7 +10,6 @@
     "build": "next build && npm run build --prefix extension-ui",
     "start": "next start",
     "lint": "eslint",
-    "vercel-build": "next build",
     "prisma:pull": "dotenv -e .env.local -- npx prisma db pull",
     "prisma:generate": "dotenv -e .env.local -- npx prisma generate",
     "prisma:studio": "dotenv -e .env.local -- npx prisma studio"
