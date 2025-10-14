@@ -6,6 +6,7 @@ import {
 } from 'recharts';
 import { motion } from 'framer-motion';
 import {StatData} from '@/types'
+import type {RawStat} from '@/types'
 
 export function GraficosEstadisticas() {
   const [data, setData] = useState<StatData[]>([]);
@@ -13,32 +14,32 @@ export function GraficosEstadisticas() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let mounted = true;
-    const fetchStats = async () => {
-      try {
-        const res = await fetch('/api/stats', { credentials: 'include' });
-        if (!res.ok) {
-          const txt = await res.text();
-          throw new Error(`HTTP ${res.status}: ${txt || res.statusText}`);
-        }
-        const json = await res.json();
-        console.debug('[/api/stats] response:', json);
-        if (!Array.isArray(json)) throw new Error('Formato inesperado de /api/stats');
-        const sanitized = json.map((item: any) => ({
-          date: String(item.date ?? ''),
-          count: Number(item.count ?? 0),
-        }));
-        if (mounted) setData(sanitized);
-      } catch (err: any) {
-        console.error('Error al obtener estadísticas:', err);
-        if (mounted) setError(err.message || 'Error desconocido');
-      } finally {
-        if (mounted) setIsLoading(false);
+  const fetchStats = async () => {
+    try {
+      const res = await fetch('/api/stats');
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`HTTP ${res.status}: ${txt || res.statusText}`);
       }
-    };
-    fetchStats();
-    return () => { mounted = false; };
-  }, []);
+      const json = await res.json();
+      if (!Array.isArray(json)) throw new Error('Formato inesperado de /api/stats');
+
+      const sanitized = (json as unknown[]).map((item) => {
+        const it = item as RawStat;
+        const date = typeof it.date === 'string' ? it.date : String(it.date ?? '');
+        const count = typeof it.count === 'number' ? it.count : Number(it.count ?? 0);
+        return { date, count };
+      });
+      setData(sanitized);
+    } catch (err: unknown) {
+      console.error('Error al obtener estadísticas:', err);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  fetchStats();
+}, []);
 
   useEffect(() => {
     setTimeout(() => {
@@ -47,7 +48,7 @@ export function GraficosEstadisticas() {
       console.debug('chart-root computed height:', getComputedStyle(container).height);
       const svg = container.querySelector('svg');
       console.debug('SVG exists?', !!svg, svg);
-    }, 300); // after render
+    }, 300); 
   }, [data, isLoading]);
 
   return (

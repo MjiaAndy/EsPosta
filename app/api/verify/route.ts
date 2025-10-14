@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
+import type { Prisma } from '@prisma/client';
 import { genAI } from '@/lib/gemini';
 import { JSDOM } from 'jsdom';
 import { Readability } from '@mozilla/readability';
@@ -27,6 +28,12 @@ class HttpError extends Error {
     this.status = status;
     this.name = 'HttpError';
   }
+}
+
+type AsyncOrSync<T> = T | Promise<T>;
+
+function isRecord(x: unknown): x is Record<string, unknown> {
+  return x !== null && typeof x === 'object' && !Array.isArray(x);
 }
 
 function getErrorMessage(err: unknown): string {
@@ -106,11 +113,11 @@ async function extractArticleServerSide(url?: string | null): Promise<{ title: s
       title: typeof article.title === 'string' ? article.title : null,
       content: typeof article.textContent === 'string' ? article.textContent : null,
     };
-  } catch (err: any) {
-    if (err?.name === 'AbortError') {
+  } catch (err: unknown) {
+    if (isRecord(err) && (err as { name?: string }).name === 'AbortError') {
       console.warn('[extractArticle] fetch abortado (timeout)');
     } else {
-      console.warn('[extractArticle] Fallo', err?.message ?? err);
+      console.warn('[extractArticle] Fallo', getErrorMessage(err));
     }
     return null;
   } finally {
@@ -120,9 +127,10 @@ async function extractArticleServerSide(url?: string | null): Promise<{ title: s
 
 function sanitizePII(text: string): string {
   if (!text) return text;
-  text = text.replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '[REDACTED_EMAIL]');
-  text = text.replace(/\+?\d[\d\s().-]{6,}\d/g, '[REDACTED_PHONE]');
-  return text;
+  let out = text;
+  out = out.replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '[REDACTED_EMAIL]');
+  out = out.replace(/\+?\d[\d\s().-]{6,}\d/g, '[REDACTED_PHONE]');
+  return out;
 }
 
 /* Zod schema */
@@ -133,72 +141,85 @@ const AnalysisSchema = z.object({
   questions: z.array(z.object({ id: z.number(), text: z.string() })),
 });
 
+/* ------------------ attemptGenerate: extractor robusto sin `any` ------------------ */
 async function attemptGenerate(modelName: string, prompt: string): Promise<string> {
   const model = genAI.getGenerativeModel({ model: modelName });
-  const result: any = await model.generateContent(prompt as any);
+  // Llamada al SDK (resultado tratado como unknown)
+  const result: unknown = await model.generateContent(prompt);
 
-  async function extractText(obj: any, depth = 0): Promise<string | null> {
+  async function extractText(obj: unknown, depth = 0): Promise<string | null> {
     if (obj == null) return null;
+    if (typeof obj === 'string' && obj.trim().length > 0) return obj;
     if (depth > 6) return null;
 
-    if (typeof obj === 'string' && obj.trim().length > 0) return obj;
-
-    if (typeof obj.text === 'function') {
-      try {
-        const maybe = obj.text();
-        return typeof maybe === 'string' ? maybe : String(await maybe);
-      } catch (e) {
-        console.warn('[attemptGenerate] error al ejecutar text():', getErrorMessage(e));
-      }
-    }
-
-    if (obj.response !== undefined) {
-      const out = await extractText(obj.response, depth + 1);
-      if (out) return out;
-    }
-
-    const arrayKeys = ['output', 'candidates', 'content', 'results', 'choices'];
-    for (const key of arrayKeys) {
-      const val = obj[key];
-      if (Array.isArray(val) && val.length) {
-        for (const item of val) {
-          const extracted = await extractText(item, depth + 1);
-          if (extracted) return extracted;
+    if (isRecord(obj)) {
+      const maybeText = obj['text'];
+      if (typeof maybeText === 'function') {
+        try {
+          const raw = (maybeText as (...args: unknown[]) => AsyncOrSync<unknown>).call(obj);
+          const awaited = raw instanceof Promise ? await raw : raw;
+          if (typeof awaited === 'string' && awaited.trim()) return awaited;
+          if (awaited !== null && awaited !== undefined) return String(awaited);
+        } catch (e: unknown) {
+          console.warn('[attemptGenerate] error calling text():', getErrorMessage(e));
         }
       }
-    }
 
-    if (typeof obj.text === 'string' && obj.text.trim().length > 0) return obj.text;
-    if (typeof obj.generated_text === 'string' && obj.generated_text.trim().length > 0) return obj.generated_text;
-    if (typeof obj.outputText === 'string' && obj.outputText.trim().length > 0) return obj.outputText;
+      if ('response' in obj) {
+        const out = await extractText((obj as Record<string, unknown>)['response'], depth + 1);
+        if (out) return out;
+      }
 
-    try {
-      for (const k of Object.keys(obj)) {
-        const v = obj[k];
-        if (typeof v === 'string' && v.trim().length > 0) return v;
-        if (typeof v === 'object' && v !== obj) {
-          const nested = await extractText(v, depth + 1);
+      const arrayKeys = ['output', 'candidates', 'content', 'results', 'choices'];
+      for (const key of arrayKeys) {
+        const val = (obj as Record<string, unknown>)[key];
+        if (Array.isArray(val) && val.length) {
+          for (const item of val) {
+            const nested = await extractText(item, depth + 1);
+            if (nested) return nested;
+          }
+        } else if (val !== undefined) {
+          const nested = await extractText(val, depth + 1);
           if (nested) return nested;
         }
       }
-    } catch (e) {
-      console.warn('[attemptGenerate] error iterando keys:', getErrorMessage(e));
+
+      const textCandidates = ['text', 'generated_text', 'outputText'];
+      for (const cand of textCandidates) {
+        const v = (obj as Record<string, unknown>)[cand];
+        if (typeof v === 'string' && v.trim().length > 0) return v;
+      }
+
+      try {
+        for (const k of Object.keys(obj)) {
+          const v = (obj as Record<string, unknown>)[k];
+          if (typeof v === 'string' && v.trim().length > 0) return v;
+          if (isRecord(v) || Array.isArray(v)) {
+            const nested = await extractText(v, depth + 1);
+            if (nested) return nested;
+          }
+        }
+      } catch (e: unknown) {
+        console.warn('[attemptGenerate] error iterating keys:', getErrorMessage(e));
+      }
     }
+
     return null;
   }
+
   const text = await extractText(result);
-  if (text && text.trim().length > 0) {
-    return text;
-  }
+  if (text && text.trim().length > 0) return text;
+
+  // fallback
   try {
-    return JSON.stringify(result);
-  } catch (e) {
+    return typeof result === 'string' ? result : JSON.stringify(result);
+  } catch {
     return String(result);
   }
 }
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*', 
+  'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
@@ -232,8 +253,7 @@ Contenido a analizar:
 ---
 `;
 
-/* ------------------ ROUTES ------------------ */
-export async function OPTIONS(_request: NextRequest) {
+export async function OPTIONS() {
   return new NextResponse(null, { headers: corsHeaders });
 }
 
@@ -241,8 +261,8 @@ export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     const body = (await request.json()) as Partial<{ content?: string; url?: string; title?: string }>;
+    const url = typeof body.url === 'string' ? body.url : undefined;
     let content = typeof body.content === 'string' ? body.content : '';
-    let url = typeof body.url === 'string' ? body.url : undefined;
     let title = typeof body.title === 'string' ? body.title : '';
 
     if (!content || isLikelyUISnippet(content)) {
@@ -267,19 +287,20 @@ export async function POST(request: NextRequest) {
     if (isCircuitOpen(PRIMARY_MODEL)) {
       throw new HttpError('El servicio de IA está temporalmente saturado. Intenta más tarde.', 503);
     }
+
     let jsonText: string;
     try {
       jsonText = await attemptGenerate(PRIMARY_MODEL, promptWithContent);
       recordCircuitSuccess(PRIMARY_MODEL);
-    } catch (primaryError: any) {
-      console.error('[verify] primary model failed:', primaryError?.message ?? primaryError);
+    } catch (primaryError: unknown) {
+      console.error('[verify] primary model failed:', getErrorMessage(primaryError));
       recordCircuitFailure(PRIMARY_MODEL);
       try {
         console.info('[verify] trying fallback model', FALLBACK_MODEL);
         jsonText = await attemptGenerate(FALLBACK_MODEL, promptWithContent);
         recordCircuitSuccess(PRIMARY_MODEL);
-      } catch (fallbackError: any) {
-        console.error('[verify] fallback failed:', fallbackError?.message ?? fallbackError);
+      } catch (fallbackError: unknown) {
+        console.error('[verify] fallback failed:', getErrorMessage(fallbackError));
         throw new HttpError('Servicio de IA no disponible. Intenta más tarde.', 503);
       }
     }
@@ -288,8 +309,8 @@ export async function POST(request: NextRequest) {
     let parsedJson: unknown;
     try {
       parsedJson = JSON.parse(cleanedJsonText);
-    } catch (err: any) {
-      console.error('[verify] JSON parse failed:', err?.message ?? err);
+    } catch (err: unknown) {
+      console.error('[verify] JSON parse failed:', getErrorMessage(err));
       throw new HttpError('La respuesta de la IA no era JSON válido.', 502);
     }
 
@@ -300,23 +321,38 @@ export async function POST(request: NextRequest) {
     }
     const analysisResult = validation.data;
 
+    // Normalizar/serializar
+    let analysisForDb: Prisma.InputJsonValue | undefined;
+    try {
+      const normalized = JSON.parse(JSON.stringify(analysisResult));
+      analysisForDb = normalized as unknown as Prisma.InputJsonValue;
+    } catch (e: unknown) {
+      console.warn('[verify] no se pudo serializar analysisResult para guardar en BD:', getErrorMessage(e));
+      analysisForDb = undefined;
+    }
+
     if (session?.user?.id) {
       try {
         await prisma.verification.create({
-          data: { userId: session.user.id, url: url ?? null, title: title ?? null, analysis: analysisResult as any },
+          data: {
+            userId: session.user.id,
+            url: url ?? null,
+            title: title ?? null,
+            analysis: analysisForDb,
+          },
         });
         console.info(`[verify] saved verification for user ${session.user.id}`);
-      } catch (dbErr) {
-        console.warn('[verify] DB save failed (non-fatal):', dbErr);
+      } catch (dbErr: unknown) {
+        console.warn('[verify] DB save failed (non-fatal):', getErrorMessage(dbErr));
       }
     }
 
     return new NextResponse(JSON.stringify(analysisResult), { status: 200, headers: corsHeaders });
-  } catch (err: any) {
+  } catch (err: unknown) {
     if (err instanceof HttpError) {
       return new NextResponse(JSON.stringify({ error: err.message }), { status: err.status, headers: corsHeaders });
     }
-    console.error('[verify] unexpected error:', err);
+    console.error('[verify] unexpected error:', getErrorMessage(err));
     return new NextResponse(JSON.stringify({ error: 'Ocurrió un error interno en el servidor.' }), { status: 500, headers: corsHeaders });
   }
 }

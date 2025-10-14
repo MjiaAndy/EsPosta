@@ -1,5 +1,5 @@
 import { getServerSession } from "next-auth/next";
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
@@ -9,11 +9,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-export async function OPTIONS(_request: NextRequest) {
+export async function OPTIONS() {
   return new NextResponse(null, { headers: corsHeaders });
 }
 
-export async function GET(_request: NextRequest) {
+export async function GET() {
   const session = await getServerSession(authOptions);
 
   if (!session || !session.user || !session.user.id) {
@@ -26,9 +26,9 @@ export async function GET(_request: NextRequest) {
         userId: session.user.id,
       },
       orderBy: {
-        createdAt: 'desc', // Las más recientes primero
+        createdAt: 'desc', 
       },
-      take: 10, // Limitamos a las últimas 10
+      take: 10,
     });
 
     return new NextResponse(JSON.stringify(history), { status: 200, headers: corsHeaders });

@@ -2,12 +2,11 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { GraficosEstadisticas } from "./components/GraficosEstadisticas";
 import { HistorialVerificaciones } from "./components/HistorialVerificaciones";
-import { DashboardPageProps} from '@/types'
-
+import type { DashboardPageProps } from "@/types";
 
 export default async function DashboardPage({ searchParams }: DashboardPageProps) {
   const [params, session] = await Promise.all([
-    searchParams,
+    Promise.resolve(searchParams) as Promise<Record<string, string | string[] | undefined> | undefined>,
     getServerSession(authOptions),
   ]);
 
@@ -18,8 +17,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
   return (
     <div>
       <h1 className="text-3xl font-bold">Hola {session?.user?.name ?? 'Usuario'}</h1>
-      <p className="mt-2">Aquí puedes ver tu actividad reciente.</p>
-
+      <p className="mt-2">Esta es tu actividad reciente.</p>
       <GraficosEstadisticas />
       <HistorialVerificaciones page={page} />
     </div>

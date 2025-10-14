@@ -3,10 +3,10 @@
 export type VerificationDto = {
   id: string;
   userId?: string;
-  createdAt?: string; // en JSON normalmente viene como ISO string
+  createdAt?: string; 
   url?: string | null;
   title?: string | null;
-  analysis?: any; // o una forma más estricta si la conoces
+  analysis?: any; 
 };
 export interface SourceAnalysis {
   type: string;
@@ -34,6 +34,8 @@ export interface AnalysisResult {
 
 // API y Tipos de Comunicaciones
 
+export type RawStat = { date?: unknown; count?: unknown };
+
 export type ServiceWorkerResponse = {
   status: 'success';
   data: AnalysisResult;
@@ -58,9 +60,7 @@ export interface PaginationControlsProps {
 }
 
 export interface DashboardPageProps {
-  searchParams: {
-    page?: string;
-  };
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }
 
 export interface HistorialVerificacionesProps {
